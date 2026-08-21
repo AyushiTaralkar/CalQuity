@@ -2,6 +2,8 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
+from app.rag.metadata import build_metadata
+
 
 DOCUMENTS_DIR = Path("data/raw/documents")
 
@@ -9,9 +11,6 @@ DOCUMENTS_DIR = Path("data/raw/documents")
 def extract_pdf_text(pdf_path: Path) -> list[dict]:
     """
     Extract text from every page of a PDF.
-
-    Returns one dictionary per page so we can preserve
-    page-level metadata for future citations.
     """
 
     reader = PdfReader(pdf_path)
@@ -19,6 +18,7 @@ def extract_pdf_text(pdf_path: Path) -> list[dict]:
     pages = []
 
     for page_number, page in enumerate(reader.pages, start=1):
+
         text = page.extract_text() or ""
 
         text = text.strip()
@@ -26,11 +26,14 @@ def extract_pdf_text(pdf_path: Path) -> list[dict]:
         if not text:
             continue
 
+        metadata = build_metadata(pdf_path.name)
+
         pages.append(
             {
                 "source": pdf_path.name,
                 "page": page_number,
                 "text": text,
+                "metadata": metadata,
             }
         )
 
@@ -44,16 +47,21 @@ def load_all_documents() -> list[dict]:
 
     documents = []
 
-    pdf_files = sorted(DOCUMENTS_DIR.glob("*.pdf"))
+    pdf_files = sorted(
+        DOCUMENTS_DIR.glob("*.pdf")
+    )
 
     for pdf_path in pdf_files:
+
         print(f"Reading: {pdf_path.name}")
 
         pages = extract_pdf_text(pdf_path)
 
         documents.extend(pages)
 
-        print(f"  Pages extracted: {len(pages)}")
+        print(
+            f"  Pages extracted: {len(pages)}"
+        )
 
     return documents
 
@@ -66,19 +74,29 @@ if __name__ == "__main__":
     print("DOCUMENT INGESTION SUMMARY")
     print("=" * 70)
 
-    print(f"Total pages extracted: {len(documents)}")
-
-    sources = sorted(
-        set(document["source"] for document in documents)
+    print(
+        f"Total pages extracted: {len(documents)}"
     )
 
-    print(f"Documents found: {len(sources)}")
+    sources = sorted(
+        set(
+            document["source"]
+            for document in documents
+        )
+    )
+
+    print(
+        f"Documents found: {len(sources)}"
+    )
 
     for source in sources:
+
         count = sum(
             1
             for document in documents
             if document["source"] == source
         )
 
-        print(f"  {source}: {count} pages")
+        print(
+            f"  {source}: {count} pages"
+        )
