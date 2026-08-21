@@ -18,13 +18,19 @@ METADATA_FILE = VECTOR_STORE_DIR / "metadata.pkl"
 
 def load_vector_store():
 
+    print("Loading embedding model...")
+
     model = SentenceTransformer(
         MODEL_NAME
     )
 
+    print("Loading FAISS index...")
+
     index = faiss.read_index(
         str(INDEX_FILE)
     )
+
+    print("Loading metadata...")
 
     with open(
         METADATA_FILE,
@@ -37,13 +43,12 @@ def load_vector_store():
 
 
 def search(
+    model,
+    index,
+    metadata,
     query: str,
     top_k: int = 3,
 ):
-
-    model, index, metadata = (
-        load_vector_store()
-    )
 
     query_embedding = model.encode(
         [query],
@@ -84,6 +89,10 @@ def search(
 
 def main():
 
+    model, index, metadata = (
+        load_vector_store()
+    )
+
     queries = [
         "Can a BOOKED shipment be cancelled after 30 minutes?",
         "What is the priority for suspected API key exposure?",
@@ -100,26 +109,40 @@ def main():
         print(query)
 
         results = search(
+            model,
+            index,
+            metadata,
             query,
             top_k=3,
         )
 
         print("\nRESULTS")
 
-        for result in results:
+        for rank, result in enumerate(
+            results,
+            start=1,
+        ):
 
-            print("\n" + "-" * 60)
+            print(
+                "\n" + "-" * 60
+            )
+
+            print(
+                f"Rank: {rank}"
+            )
 
             print(
                 f"Score: {result['score']:.4f}"
             )
 
             print(
-                f"Source: {result['metadata']['source']}"
+                f"Source: "
+                f"{result['metadata']['source']}"
             )
 
             print(
-                f"Page: {result['metadata']['page']}"
+                f"Page: "
+                f"{result['metadata']['page']}"
             )
 
             print(
