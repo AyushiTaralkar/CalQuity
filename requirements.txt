@@ -3,3 +3,5 @@ openpyxl
 sqlalchemy 
 python-dotenv
 pypdf
+sentence-transformers 
+faiss-cpu
