@@ -5,3 +5,4 @@ python-dotenv
 pypdf
 sentence-transformers 
 faiss-cpu
+google-genai

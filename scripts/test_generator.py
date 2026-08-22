@@ -5,6 +5,7 @@ from app.rag.generator import AnswerGenerator
 def main():
 
     retriever = Retriever(top_k=3)
+
     generator = AnswerGenerator()
 
     question = (
@@ -14,34 +15,48 @@ def main():
 
     account_id = "ACCT-001"
 
+    print("\nRetrieving evidence...")
+
     results = retriever.retrieve(
         question,
         account_id=account_id,
     )
 
-    print("\n" + "=" * 80)
-    print("RETRIEVED EVIDENCE")
-    print("=" * 80)
+    print(
+        f"Retrieved {len(results)} sources."
+    )
 
-    for result in results:
-        metadata = result.get("metadata", {})
+    print("\nGenerating grounded answer...")
 
-        print("\nSOURCE:", metadata.get("source"))
-        print("ACCOUNT:", metadata.get("account_id"))
-        print("AUTHORITY:", metadata.get("authority"))
-        print("SCORE:", result.get("score"))
-
-    prompt = generator.build_prompt(
+    response = generator.generate(
         question=question,
         results=results,
         account_id=account_id,
     )
 
     print("\n" + "=" * 80)
-    print("GENERATED PROMPT")
+    print("CALQUITY ANSWER")
     print("=" * 80)
 
-    print(prompt)
+    print(response["answer"])
+
+    print("\n" + "=" * 80)
+    print("CONFIDENCE")
+    print("=" * 80)
+
+    print(response["confidence"])
+
+    print("\n" + "=" * 80)
+    print("SOURCES")
+    print("=" * 80)
+
+    for source in response["sources"]:
+
+        print(
+            f"- {source['document']} "
+            f"(page {source['page']}) "
+            f"[{source['authority']}]"
+        )
 
 
 if __name__ == "__main__":
