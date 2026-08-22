@@ -1,47 +1,64 @@
 from app.rag.retriever import Retriever
 
 
-def main():
+def print_results(title, results):
+    print("\n" + "=" * 80)
+    print(title)
+    print("=" * 80)
 
+    for i, result in enumerate(results, 1):
+        metadata = result.get("metadata", {})
+
+        print(f"\n#{i}")
+        print("Score:", result.get("score"))
+        print("Source:", metadata.get("source"))
+        print("Page:", metadata.get("page"))
+        print("Authority:", metadata.get("authority"))
+        print("Account:", metadata.get("account_id"))
+        print("Status:", metadata.get("_normalized_status"))
+        print("Text:", result.get("text", "")[:500])
+
+
+def main():
     retriever = Retriever(top_k=3)
 
-    queries = [
-        "Can a BOOKED shipment be cancelled after 30 minutes?",
-        "What is the priority for suspected API key exposure?",
-        "Why can a SwiftShip shipment remain BOOKED after pickup?",
-        "What is the maximum CSV upload size for Growth?",
-    ]
+    # -----------------------------------------
+    # Test 1: General RAG
+    # -----------------------------------------
+    results = retriever.retrieve(
+        "Why can a SwiftShip shipment remain BOOKED after pickup?"
+    )
 
-    for query in queries:
+    print_results(
+        "GENERAL QUERY",
+        results,
+    )
 
-        print("\n" + "=" * 70)
-        print("QUERY")
-        print("=" * 70)
+    # -----------------------------------------
+    # Test 2: Account-aware retrieval
+    # -----------------------------------------
+    results = retriever.retrieve(
+        "What are the cancellation terms?",
+        account_id="ACCT-001",
+    )
 
-        print(query)
+    print_results(
+        "ACCT-001 QUERY",
+        results,
+    )
 
-        results = retriever.retrieve(query)
+    # -----------------------------------------
+    # Test 3: Another account
+    # -----------------------------------------
+    results = retriever.retrieve(
+        "What are the cancellation terms?",
+        account_id="ACCT-002",
+    )
 
-        print("\nRESULTS")
-
-        for rank, result in enumerate(
-            results,
-            start=1,
-        ):
-
-            print("\n" + "-" * 60)
-
-            print(f"Rank: {rank}")
-            print(f"Score: {result['score']:.4f}")
-
-            metadata = result["metadata"]
-
-            print(f"Source: {metadata['source']}")
-            print(f"Page: {metadata['page']}")
-            print(f"Authority: {metadata['authority']}")
-
-            print("\nText:")
-            print(result["text"][:500])
+    print_results(
+        "ACCT-002 QUERY",
+        results,
+    )
 
 
 if __name__ == "__main__":
