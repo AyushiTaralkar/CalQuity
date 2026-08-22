@@ -8,3 +8,6 @@ faiss-cpu
 google-genai
 uvicorn[standard]
 fastapi
+streamlit 
+requests
+pytest
