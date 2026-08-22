@@ -19,15 +19,18 @@ class QueryService:
 
     Combines:
         1. Operational database data
-        2. Policy / contract RAG evidence
-        3. Grounded Gemini generation
+        2. Account authorization / tenant isolation
+        3. Policy / contract RAG evidence
+        4. Grounded Gemini generation
 
-    Security:
-        - Enforces tenant/account isolation
-        - Prevents cross-account order access
-        - Prevents cross-account ticket access
-        - Prevents questions about other customer accounts
-        - Performs authorization BEFORE RAG retrieval
+    SECURITY:
+        A customer can ONLY access:
+        - Their own account
+        - Their own orders
+        - Their own tickets
+        - Their own account-specific contract
+
+        Global ParcelPilot policies are accessible to all accounts.
     """
 
     def __init__(self, top_k: int = 3):
@@ -35,28 +38,20 @@ class QueryService:
         self.generator = AnswerGenerator()
 
     # ============================================================
-    # SECURITY RESPONSE
+    # SECURITY HELPERS
     # ============================================================
 
-    def _access_denied(
-        self,
-        question: str,
-        account_id: Optional[str],
-        order_id: Optional[str] = None,
-        ticket_id: Optional[str] = None,
-    ):
+    def _access_denied_response(self):
         """
-        Safe response for unauthorized cross-account requests.
+        Standard response for cross-account access attempts.
 
         IMPORTANT:
-        No RAG retrieval happens for denied requests.
+        We return BEFORE RAG retrieval or Gemini generation.
+        This prevents another customer's information from reaching
+        the AI layer.
         """
 
         return {
-            "question": question,
-            "account_id": account_id,
-            "order_id": order_id,
-            "ticket_id": ticket_id,
             "answer": (
                 "ANSWER:\n"
                 "Access denied.\n\n"
@@ -66,68 +61,123 @@ class QueryService:
             ),
             "confidence": 1.0,
             "sources": [],
-            "retrieved_chunks": 0,
         }
 
-    # ============================================================
-    # CROSS-ACCOUNT QUESTION DETECTION
-    # ============================================================
+    def _account_not_found_response(self):
+        """
+        Response when the supplied account does not exist.
+        """
 
-    def _contains_other_account(
+        return {
+            "answer": (
+                "ANSWER:\n"
+                "Account not found.\n\n"
+                "REASONING:\n"
+                "The supplied account ID does not exist in the "
+                "operational database."
+            ),
+            "confidence": 1.0,
+            "sources": [],
+        }
+
+    def _order_not_found_response(self):
+        """
+        Response when an order does not exist.
+        """
+
+        return {
+            "answer": (
+                "ANSWER:\n"
+                "The requested order could not be found.\n\n"
+                "REASONING:\n"
+                "No operational database record exists for this order."
+            ),
+            "confidence": 1.0,
+            "sources": [],
+        }
+
+    def _ticket_not_found_response(self):
+        """
+        Response when a ticket does not exist.
+        """
+
+        return {
+            "answer": (
+                "ANSWER:\n"
+                "The requested ticket could not be found.\n\n"
+                "REASONING:\n"
+                "No operational database record exists for this ticket."
+            ),
+            "confidence": 1.0,
+            "sources": [],
+        }
+
+    def _contains_other_account_reference(
         self,
         question: str,
         current_account_id: str,
     ) -> bool:
         """
-        Detect whether the user's question explicitly mentions
-        another customer's account ID or account name.
+        Detect whether the user is explicitly asking about another
+        customer's account.
 
-        Example:
+        Examples:
 
             Current account:
-                ACCT-001 / Northstar Logistics
+                ACCT-001
 
             Question:
                 "What are LumenWorks' cancellation terms?"
 
-            Result:
-                True
+            -> True
 
-        This check happens BEFORE RAG retrieval.
+            Question:
+                "What are Northstar's cancellation terms?"
+
+            -> False
+
+        This is an additional safety layer.
+
+        The primary security boundary is still enforced using the
+        actual database account_id associated with orders/tickets
+        and account-scoped RAG retrieval.
         """
+
+        if not current_account_id:
+            return False
 
         question_lower = question.lower()
 
         accounts = get_all_accounts()
 
         for account in accounts:
+            target_account_id = account["account_id"]
+            target_account_name = account["account_name"]
 
-            other_account_id = account["account_id"]
-            other_account_name = account["account_name"]
-
-            # Ignore the current customer's own account.
-            if other_account_id == current_account_id:
+            # Skip current user's own account
+            if target_account_id == current_account_id:
                 continue
 
-            # ----------------------------------------------------
             # Check account ID
-            # ----------------------------------------------------
-
-            if (
-                other_account_id
-                and other_account_id.lower() in question_lower
-            ):
+            if target_account_id.lower() in question_lower:
                 return True
 
-            # ----------------------------------------------------
             # Check account name
-            # ----------------------------------------------------
-
             if (
-                other_account_name
-                and other_account_name.lower() in question_lower
+                target_account_name
+                and target_account_name.lower() in question_lower
             ):
                 return True
+
+            # Check common shortened company name
+            words = target_account_name.lower().split()
+
+            if len(words) > 0:
+                short_name = words[0]
+
+                if len(short_name) >= 4:
+                    if short_name in question_lower:
+                        return True
 
         return False
 
@@ -142,6 +192,21 @@ class QueryService:
         order_id: Optional[str] = None,
         ticket_id: Optional[str] = None,
     ):
+        """
+        Execute a secure CalQuity query.
+
+        Security order:
+
+            1. Validate question
+            2. Validate requesting account
+            3. Detect explicit cross-account references
+            4. Validate order ownership
+            5. Validate ticket ownership
+            6. Build database context
+            7. Perform account-aware RAG retrieval
+            8. Generate grounded answer
+            9. Return response
+        """
 
         # ========================================================
         # 1. BASIC VALIDATION
@@ -156,53 +221,49 @@ class QueryService:
         # 2. ACCOUNT VALIDATION
         # ========================================================
 
-        account = None
+        requesting_account = None
 
         if account_id:
 
-            account = lookup_account(account_id)
+            requesting_account = lookup_account(account_id)
 
-            # Unknown account
-            if not account:
-                return self._access_denied(
-                    question=question,
-                    account_id=account_id,
-                    order_id=order_id,
-                    ticket_id=ticket_id,
-                )
+            if requesting_account is None:
+                response = self._account_not_found_response()
+
+                return {
+                    "question": question,
+                    "account_id": account_id,
+                    "order_id": order_id,
+                    "ticket_id": ticket_id,
+                    "answer": response["answer"],
+                    "confidence": response["confidence"],
+                    "sources": response["sources"],
+                    "retrieved_chunks": 0,
+                }
 
         # ========================================================
-        # 3. CROSS-ACCOUNT QUESTION PROTECTION
+        # 3. EXPLICIT CROSS-ACCOUNT QUESTION CHECK
         # ========================================================
-
-        """
-        IMPORTANT SECURITY CHECK.
-
-        Example:
-
-            account_id = ACCT-001
-
-            question =
-                "What are LumenWorks' cancellation terms?"
-
-        Even though no order_id or ticket_id is supplied,
-        the question itself references another customer.
-
-        Therefore we reject BEFORE RAG.
-        """
 
         if account_id:
 
-            if self._contains_other_account(
-                question=question,
-                current_account_id=account_id,
+            if self._contains_other_account_reference(
+                question,
+                account_id,
             ):
-                return self._access_denied(
-                    question=question,
-                    account_id=account_id,
-                    order_id=order_id,
-                    ticket_id=ticket_id,
-                )
+
+                response = self._access_denied_response()
+
+                return {
+                    "question": question,
+                    "account_id": account_id,
+                    "order_id": order_id,
+                    "ticket_id": ticket_id,
+                    "answer": response["answer"],
+                    "confidence": response["confidence"],
+                    "sources": response["sources"],
+                    "retrieved_chunks": 0,
+                }
 
         # ========================================================
         # 4. ORDER AUTHORIZATION
@@ -214,43 +275,37 @@ class QueryService:
 
             order = lookup_order(order_id)
 
-            # ----------------------------------------------------
             # Order does not exist
-            # ----------------------------------------------------
+            if order is None:
 
-            if not order:
+                response = self._order_not_found_response()
 
                 return {
                     "question": question,
                     "account_id": account_id,
                     "order_id": order_id,
                     "ticket_id": ticket_id,
-                    "answer": (
-                        "ANSWER:\n"
-                        "The requested order could not be found.\n\n"
-                        "REASONING:\n"
-                        "No operational database record exists "
-                        "for this order."
-                    ),
-                    "confidence": 1.0,
-                    "sources": [],
+                    "answer": response["answer"],
+                    "confidence": response["confidence"],
+                    "sources": response["sources"],
                     "retrieved_chunks": 0,
                 }
 
-            # ----------------------------------------------------
-            # CRITICAL TENANT CHECK
-            # ----------------------------------------------------
+            # CRITICAL TENANT ISOLATION CHECK
+            if account_id and order["account_id"] != account_id:
 
-            if account_id:
+                response = self._access_denied_response()
 
-                if order["account_id"] != account_id:
-
-                    return self._access_denied(
-                        question=question,
-                        account_id=account_id,
-                        order_id=order_id,
-                        ticket_id=ticket_id,
-                    )
+                return {
+                    "question": question,
+                    "account_id": account_id,
+                    "order_id": order_id,
+                    "ticket_id": ticket_id,
+                    "answer": response["answer"],
+                    "confidence": response["confidence"],
+                    "sources": response["sources"],
+                    "retrieved_chunks": 0,
+                }
 
         # ========================================================
         # 5. TICKET AUTHORIZATION
@@ -262,43 +317,37 @@ class QueryService:
 
             ticket = lookup_ticket(ticket_id)
 
-            # ----------------------------------------------------
             # Ticket does not exist
-            # ----------------------------------------------------
+            if ticket is None:
 
-            if not ticket:
+                response = self._ticket_not_found_response()
 
                 return {
                     "question": question,
                     "account_id": account_id,
                     "order_id": order_id,
                     "ticket_id": ticket_id,
-                    "answer": (
-                        "ANSWER:\n"
-                        "The requested ticket could not be found.\n\n"
-                        "REASONING:\n"
-                        "No operational database record exists "
-                        "for this ticket."
-                    ),
-                    "confidence": 1.0,
-                    "sources": [],
+                    "answer": response["answer"],
+                    "confidence": response["confidence"],
+                    "sources": response["sources"],
                     "retrieved_chunks": 0,
                 }
 
-            # ----------------------------------------------------
-            # CRITICAL TENANT CHECK
-            # ----------------------------------------------------
+            # CRITICAL TENANT ISOLATION CHECK
+            if account_id and ticket["account_id"] != account_id:
 
-            if account_id:
+                response = self._access_denied_response()
 
-                if ticket["account_id"] != account_id:
-
-                    return self._access_denied(
-                        question=question,
-                        account_id=account_id,
-                        order_id=order_id,
-                        ticket_id=ticket_id,
-                    )
+                return {
+                    "question": question,
+                    "account_id": account_id,
+                    "order_id": order_id,
+                    "ticket_id": ticket_id,
+                    "answer": response["answer"],
+                    "confidence": response["confidence"],
+                    "sources": response["sources"],
+                    "retrieved_chunks": 0,
+                }
 
         # ========================================================
         # 6. DATABASE CONTEXT
@@ -306,13 +355,9 @@ class QueryService:
 
         database_context = {}
 
-        # --------------------------------------------------------
-        # Account context
-        # --------------------------------------------------------
+        if requesting_account:
 
-        if account:
-
-            database_context["account"] = account
+            database_context["account"] = requesting_account
 
             database_context["orders"] = get_account_orders(
                 account_id
@@ -322,32 +367,17 @@ class QueryService:
                 account_id
             )
 
-        # --------------------------------------------------------
-        # Specific order context
-        # --------------------------------------------------------
-
+        # Add validated order
         if order:
-
             database_context["order"] = order
 
-        # --------------------------------------------------------
-        # Specific ticket context
-        # --------------------------------------------------------
-
+        # Add validated ticket
         if ticket:
-
             database_context["ticket"] = ticket
 
         # ========================================================
-        # 7. RAG RETRIEVAL
+        # 7. ACCOUNT-AWARE RAG RETRIEVAL
         # ========================================================
-
-        """
-        RAG happens ONLY after all authorization checks.
-
-        This is important because unauthorized requests should
-        never retrieve another customer's contract.
-        """
 
         results = self.retriever.retrieve(
             query=question,
@@ -355,7 +385,7 @@ class QueryService:
         )
 
         # ========================================================
-        # 8. GROUNDED GENERATION
+        # 8. GROUNDED ANSWER GENERATION
         # ========================================================
 
         response = self.generator.generate(

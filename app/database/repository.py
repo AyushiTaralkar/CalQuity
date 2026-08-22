@@ -234,16 +234,25 @@ def get_account_tickets(account_id: str) -> list[dict]:
             for ticket in tickets
         ]
 
-def get_all_accounts():
+# ============================================================
+# ALL ACCOUNTS
+# ============================================================
+
+def get_all_accounts() -> list[dict]:
     """
     Return all customer accounts.
 
-    Used only for account authorization / tenant isolation.
+    Used ONLY for account authorization / tenant isolation.
+
+    This function does not expose contracts or sensitive
+    operational information.
     """
 
-    with SessionLocal() as db:
+    with SessionLocal() as session:
 
-        accounts = db.query(Account).all()
+        accounts = session.scalars(
+            select(Account)
+        ).all()
 
         return [
             {
@@ -252,38 +261,3 @@ def get_all_accounts():
             }
             for account in accounts
         ]
-def account_exists(account_id: str) -> bool:
-    with SessionLocal() as db:
-        return db.query(Account).filter(
-            Account.account_id == account_id
-        ).first() is not None
-
-
-def order_belongs_to_account(
-    order_id: str,
-    account_id: str
-) -> bool:
-    with SessionLocal() as db:
-        order = db.query(Order).filter(
-            Order.order_id == order_id
-        ).first()
-
-        if not order:
-            return False
-
-        return order.account_id == account_id
-
-
-def ticket_belongs_to_account(
-    ticket_id: str,
-    account_id: str
-) -> bool:
-    with SessionLocal() as db:
-        ticket = db.query(Ticket).filter(
-            Ticket.ticket_id == ticket_id
-        ).first()
-
-        if not ticket:
-            return False
-
-        return ticket.account_id == account_id
