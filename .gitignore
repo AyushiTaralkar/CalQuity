@@ -25,6 +25,7 @@ __pycache__/
 venv/
 env/
 
+
 # IDE
 .vscode/
 .idea/
@@ -35,3 +36,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+
+.env
