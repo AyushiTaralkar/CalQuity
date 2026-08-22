@@ -252,3 +252,38 @@ def get_all_accounts():
             }
             for account in accounts
         ]
+def account_exists(account_id: str) -> bool:
+    with SessionLocal() as db:
+        return db.query(Account).filter(
+            Account.account_id == account_id
+        ).first() is not None
+
+
+def order_belongs_to_account(
+    order_id: str,
+    account_id: str
+) -> bool:
+    with SessionLocal() as db:
+        order = db.query(Order).filter(
+            Order.order_id == order_id
+        ).first()
+
+        if not order:
+            return False
+
+        return order.account_id == account_id
+
+
+def ticket_belongs_to_account(
+    ticket_id: str,
+    account_id: str
+) -> bool:
+    with SessionLocal() as db:
+        ticket = db.query(Ticket).filter(
+            Ticket.ticket_id == ticket_id
+        ).first()
+
+        if not ticket:
+            return False
+
+        return ticket.account_id == account_id
