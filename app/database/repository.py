@@ -233,3 +233,22 @@ def get_account_tickets(account_id: str) -> list[dict]:
             }
             for ticket in tickets
         ]
+
+def get_all_accounts():
+    """
+    Return all customer accounts.
+
+    Used only for account authorization / tenant isolation.
+    """
+
+    with SessionLocal() as db:
+
+        accounts = db.query(Account).all()
+
+        return [
+            {
+                "account_id": account.account_id,
+                "account_name": account.account_name,
+            }
+            for account in accounts
+        ]

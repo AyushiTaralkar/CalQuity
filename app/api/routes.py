@@ -43,7 +43,7 @@ class QueryResponse(BaseModel):
 
     retrieved_chunks: int
 
-    database_context: dict[str, Any] = {}
+    
 
 
 @router.post(
