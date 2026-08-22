@@ -1,8 +1,9 @@
 from pathlib import Path
-
+from app.rag.text_cleaner import clean_text
 from pypdf import PdfReader
 
 from app.rag.metadata import build_metadata
+from app.rag.text_cleaner import clean_text
 
 
 DOCUMENTS_DIR = Path("data/raw/documents")
@@ -19,7 +20,7 @@ def extract_pdf_text(pdf_path: Path) -> list[dict]:
 
     for page_number, page in enumerate(reader.pages, start=1):
 
-        text = page.extract_text() or ""
+        text = clean_text(page.extract_text() or "")
 
         text = text.strip()
 

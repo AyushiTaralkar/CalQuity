@@ -1,97 +1,9 @@
-from pathlib import Path
-import pickle
-
-import faiss
-import numpy as np
-from sentence_transformers import SentenceTransformer
-
-
-MODEL_NAME = "all-MiniLM-L6-v2"
-
-VECTOR_STORE_DIR = Path(
-    "data/processed/vector_store"
-)
-
-INDEX_FILE = VECTOR_STORE_DIR / "index.faiss"
-METADATA_FILE = VECTOR_STORE_DIR / "metadata.pkl"
-
-
-def load_vector_store():
-
-    print("Loading embedding model...")
-
-    model = SentenceTransformer(
-        MODEL_NAME
-    )
-
-    print("Loading FAISS index...")
-
-    index = faiss.read_index(
-        str(INDEX_FILE)
-    )
-
-    print("Loading metadata...")
-
-    with open(
-        METADATA_FILE,
-        "rb",
-    ) as file:
-
-        metadata = pickle.load(file)
-
-    return model, index, metadata
-
-
-def search(
-    model,
-    index,
-    metadata,
-    query: str,
-    top_k: int = 3,
-):
-
-    query_embedding = model.encode(
-        [query],
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    )
-
-    query_embedding = query_embedding.astype(
-        np.float32
-    )
-
-    scores, indices = index.search(
-        query_embedding,
-        top_k,
-    )
-
-    results = []
-
-    for score, index_position in zip(
-        scores[0],
-        indices[0],
-    ):
-
-        if index_position == -1:
-            continue
-
-        item = metadata[index_position]
-
-        results.append(
-            {
-                "score": float(score),
-                **item,
-            }
-        )
-
-    return results
+from app.rag.retriever import Retriever
 
 
 def main():
 
-    model, index, metadata = (
-        load_vector_store()
-    )
+    retriever = Retriever(top_k=3)
 
     queries = [
         "Can a BOOKED shipment be cancelled after 30 minutes?",
@@ -108,13 +20,7 @@ def main():
 
         print(query)
 
-        results = search(
-            model,
-            index,
-            metadata,
-            query,
-            top_k=3,
-        )
+        results = retriever.retrieve(query)
 
         print("\nRESULTS")
 
@@ -123,38 +29,19 @@ def main():
             start=1,
         ):
 
-            print(
-                "\n" + "-" * 60
-            )
+            print("\n" + "-" * 60)
 
-            print(
-                f"Rank: {rank}"
-            )
+            print(f"Rank: {rank}")
+            print(f"Score: {result['score']:.4f}")
 
-            print(
-                f"Score: {result['score']:.4f}"
-            )
+            metadata = result["metadata"]
 
-            print(
-                f"Source: "
-                f"{result['metadata']['source']}"
-            )
-
-            print(
-                f"Page: "
-                f"{result['metadata']['page']}"
-            )
-
-            print(
-                f"Authority: "
-                f"{result['metadata']['authority']}"
-            )
+            print(f"Source: {metadata['source']}")
+            print(f"Page: {metadata['page']}")
+            print(f"Authority: {metadata['authority']}")
 
             print("\nText:")
-
-            print(
-                result["text"][:500]
-            )
+            print(result["text"][:500])
 
 
 if __name__ == "__main__":
