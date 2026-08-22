@@ -45,24 +45,34 @@ export default function Home() {
     setLoading(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/query", {
-      
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          question: userQuestion,
-          account_id: accountId,
-        }),
-      });
+      console.log("Calling ParcelPilot API...");
 
-      if (!response.ok) {
-        throw new Error("API request failed");
-      }
+const response = await fetch(
+  "http://127.0.0.1:8000/api/v1/query",
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      question: userQuestion,
+      account_id: accountId,
+    }),
+  }
+);
 
-      const data = await response.json();
+console.log("API status:", response.status);
+console.log("API ok:", response.ok);
 
+if (!response.ok) {
+  const errorText = await response.text();
+  console.error("API response:", errorText);
+  throw new Error(`HTTP ${response.status}: ${errorText}`);
+}
+
+const data = await response.json();
+
+console.log("API response data:", data);
       setMessages((prev) => [
         ...prev,
         {
@@ -73,15 +83,19 @@ export default function Home() {
         },
       ]);
     } catch (error) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            "I couldn't connect to the ParcelPilot support service. Make sure the FastAPI server is running on port 8000.",
-        },
-      ]);
-    } finally {
+  console.error("ParcelPilot API error:", error);
+
+  setMessages((prev) => [
+    ...prev,
+    {
+      role: "assistant",
+      content:
+        error instanceof Error
+          ? `API Error: ${error.message}`
+          : "Unknown API error",
+    },
+  ]);
+}finally {
       setLoading(false);
     }
   };
