@@ -26,7 +26,7 @@ class AnswerGenerator:
             api_key=api_key
         )
 
-        self.model = "gemini-2.5-flash"
+        self.model = "gemini-3.6-flash"
 
     def build_context(
         self,
