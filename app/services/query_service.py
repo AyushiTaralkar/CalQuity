@@ -1,5 +1,5 @@
 from typing import Optional
-from app.agent.router import detect_intent, Intent
+
 from app.database.repository import (
     lookup_account,
     lookup_order,
@@ -97,6 +97,105 @@ class QueryService:
             "sources": [],
         }
 
+    # ============================================================
+    # GEMINI FALLBACK
+    # ============================================================
+
+    def _evidence_fallback_response(
+        self,
+        question: str,
+        results: list,
+        database_context: dict,
+    ):
+        """
+        Safe fallback when Gemini is unavailable.
+
+        Never invents an answer.
+        Returns only information that exists in retrieved evidence.
+        """
+
+        if not results and not database_context:
+            return {
+                "answer": (
+                    "ANSWER:\n"
+                    "The available evidence is insufficient.\n\n"
+                    "REASONING:\n"
+                    "No relevant authorized evidence was retrieved for "
+                    "this question. Therefore, I cannot determine the "
+                    "answer without risking an unsupported claim."
+                ),
+                "confidence": 0.0,
+                "sources": [],
+            }
+
+        answer_parts = [
+            "ANSWER:",
+            "The AI generation service is temporarily unavailable, "
+            "so I cannot provide a synthesized answer.",
+            "",
+            "REASONING:",
+            "The following authorized evidence was retrieved and can "
+            "be reviewed, but it should not be interpreted beyond "
+            "what is explicitly stated in the evidence.",
+        ]
+
+        sources = []
+
+        for result in results:
+
+            document = result.get("document")
+            page = result.get("page")
+            authority = result.get("authority")
+            content = result.get("content", "")
+            score = result.get("score")
+
+            if content:
+                content = content.strip()
+
+                # Prevent extremely large fallback responses
+                if len(content) > 700:
+                    content = content[:700].rstrip() + "..."
+
+                answer_parts.extend(
+                    [
+                        "",
+                        f"- {content}",
+                    ]
+                )
+
+            sources.append(
+                {
+                    "document": document,
+                    "page": page,
+                    "authority": authority,
+                    "account_id": result.get("account_id"),
+                    "score": score,
+                }
+            )
+
+        answer_parts.extend(
+            [
+                "",
+                "NOTE:",
+                "This response is based only on retrieved authorized "
+                "evidence because the AI generation service is currently "
+                "unavailable.",
+            ]
+        )
+
+        # Conservative confidence because this is not LLM-generated
+        confidence = 0.5 if results else 0.2
+
+        return {
+            "answer": "\n".join(answer_parts),
+            "confidence": confidence,
+            "sources": sources,
+        }
+
+    # ============================================================
+    # CROSS-ACCOUNT SECURITY
+    # ============================================================
+
     def _contains_other_account_reference(
         self,
         question: str,
@@ -114,6 +213,7 @@ class QueryService:
         accounts = get_all_accounts()
 
         for account in accounts:
+
             target_account_id = account["account_id"]
             target_account_name = account["account_name"]
 
@@ -136,6 +236,7 @@ class QueryService:
             words = target_account_name.lower().split()
 
             if words:
+
                 short_name = words[0]
 
                 if len(short_name) >= 4:
@@ -158,18 +259,19 @@ class QueryService:
         """
         Execute a secure CalQuity query.
 
-        Security order:
+        Pipeline:
 
         1. Validate question
         2. Validate requesting account
-        3. Detect explicit cross-account references
+        3. Detect cross-account references
         4. Validate order ownership
         5. Validate ticket ownership
         6. Build database context
-        7. Perform account-aware RAG retrieval
-        8. Apply evidence + precedence
-        9. Generate grounded answer
-        10. Return response
+        7. Retrieve RAG evidence
+        8. Apply account filtering
+        9. Apply evidence precedence
+        10. Generate grounded answer
+        11. Fall back safely if Gemini fails
         """
 
         # ========================================================
@@ -180,11 +282,6 @@ class QueryService:
             raise ValueError("Question cannot be empty.")
 
         question = question.strip()
-          # ========================================================
-# 1.5. INTENT ROUTING
-# ========================================================
-
-        intent = detect_intent(question)
 
         # ========================================================
         # 2. ACCOUNT VALIDATION
@@ -337,26 +434,26 @@ class QueryService:
                 account_id
             )
 
-        # Add validated order
         if order:
             database_context["order"] = order
 
-        # Add validated ticket
         if ticket:
             database_context["ticket"] = ticket
 
         # ========================================================
-# 7. ACCOUNT-AWARE RAG RETRIEVAL
-# ========================================================
+        # 7. ACCOUNT-AWARE RAG RETRIEVAL
+        # ========================================================
 
-        results = []
+        # Retrieve evidence for every question.
+        # Intent routing is intentionally bypassed here because
+        # policy/product questions must not be skipped due to
+        # incorrect intent classification.
 
-        if intent in (Intent.RAG, Intent.COMBINED):
+        results = self.retriever.retrieve(
+            query=question,
+            account_id=account_id,
+        )
 
-           results = self.retriever.retrieve(
-               query=question,
-               account_id=account_id,
-            )
         # ========================================================
         # 8. EVIDENCE + PRECEDENCE
         # ========================================================
@@ -376,8 +473,10 @@ class QueryService:
             limit=self.retriever.top_k,
         )
 
-        # Convert Evidence objects back into dictionaries
-        # for the generator.
+        # ========================================================
+        # 9. CONVERT EVIDENCE FOR GENERATOR
+        # ========================================================
+
         results = [
             {
                 "document": item.document,
@@ -391,18 +490,35 @@ class QueryService:
         ]
 
         # ========================================================
-        # 9. GROUNDED ANSWER GENERATION
+        # 10. GROUNDED ANSWER GENERATION
         # ========================================================
 
-        response = self.generator.generate(
-            question=question,
-            results=results,
-            account_id=account_id,
-            database_context=database_context,
-        )
+        try:
+
+            response = self.generator.generate(
+                question=question,
+                results=results,
+                account_id=account_id,
+                database_context=database_context,
+            )
+
+        except Exception as exc:
+
+            error_message = str(exc)
+
+            print(
+                "[WARN] Gemini generation failed. "
+                f"Using evidence fallback. Error: {error_message}"
+            )
+
+            response = self._evidence_fallback_response(
+                question=question,
+                results=results,
+                database_context=database_context,
+            )
 
         # ========================================================
-        # 10. FINAL RESPONSE
+        # 11. FINAL RESPONSE
         # ========================================================
 
         return {
