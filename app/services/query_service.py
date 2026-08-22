@@ -9,6 +9,12 @@ from app.database.repository import (
     get_all_accounts,
 )
 
+from app.rag.evidence import (
+    build_evidence,
+    filter_account_evidence,
+    get_best_evidence,
+)
+
 from app.rag.retriever import Retriever
 from app.rag.generator import AnswerGenerator
 
@@ -23,7 +29,7 @@ class QueryService:
         3. Policy / contract RAG evidence
         4. Grounded Gemini generation
 
-    SECURITY:
+    Security:
         A customer can ONLY access:
         - Their own account
         - Their own orders
@@ -42,15 +48,6 @@ class QueryService:
     # ============================================================
 
     def _access_denied_response(self):
-        """
-        Standard response for cross-account access attempts.
-
-        IMPORTANT:
-        We return BEFORE RAG retrieval or Gemini generation.
-        This prevents another customer's information from reaching
-        the AI layer.
-        """
-
         return {
             "answer": (
                 "ANSWER:\n"
@@ -64,10 +61,6 @@ class QueryService:
         }
 
     def _account_not_found_response(self):
-        """
-        Response when the supplied account does not exist.
-        """
-
         return {
             "answer": (
                 "ANSWER:\n"
@@ -81,10 +74,6 @@ class QueryService:
         }
 
     def _order_not_found_response(self):
-        """
-        Response when an order does not exist.
-        """
-
         return {
             "answer": (
                 "ANSWER:\n"
@@ -97,10 +86,6 @@ class QueryService:
         }
 
     def _ticket_not_found_response(self):
-        """
-        Response when a ticket does not exist.
-        """
-
         return {
             "answer": (
                 "ANSWER:\n"
@@ -118,29 +103,7 @@ class QueryService:
         current_account_id: str,
     ) -> bool:
         """
-        Detect whether the user is explicitly asking about another
-        customer's account.
-
-        Examples:
-
-            Current account:
-                ACCT-001
-
-            Question:
-                "What are LumenWorks' cancellation terms?"
-
-            -> True
-
-            Question:
-                "What are Northstar's cancellation terms?"
-
-            -> False
-
-        This is an additional safety layer.
-
-        The primary security boundary is still enforced using the
-        actual database account_id associated with orders/tickets
-        and account-scoped RAG retrieval.
+        Detect explicit references to another customer account.
         """
 
         if not current_account_id:
@@ -154,25 +117,25 @@ class QueryService:
             target_account_id = account["account_id"]
             target_account_name = account["account_name"]
 
-            # Skip current user's own account
+            # Skip current account
             if target_account_id == current_account_id:
                 continue
 
-            # Check account ID
+            # Account ID
             if target_account_id.lower() in question_lower:
                 return True
 
-            # Check account name
+            # Full account name
             if (
                 target_account_name
                 and target_account_name.lower() in question_lower
             ):
                 return True
 
-            # Check common shortened company name
+            # Short company name
             words = target_account_name.lower().split()
 
-            if len(words) > 0:
+            if words:
                 short_name = words[0]
 
                 if len(short_name) >= 4:
@@ -197,15 +160,16 @@ class QueryService:
 
         Security order:
 
-            1. Validate question
-            2. Validate requesting account
-            3. Detect explicit cross-account references
-            4. Validate order ownership
-            5. Validate ticket ownership
-            6. Build database context
-            7. Perform account-aware RAG retrieval
-            8. Generate grounded answer
-            9. Return response
+        1. Validate question
+        2. Validate requesting account
+        3. Detect explicit cross-account references
+        4. Validate order ownership
+        5. Validate ticket ownership
+        6. Build database context
+        7. Perform account-aware RAG retrieval
+        8. Apply evidence + precedence
+        9. Generate grounded answer
+        10. Return response
         """
 
         # ========================================================
@@ -228,6 +192,7 @@ class QueryService:
             requesting_account = lookup_account(account_id)
 
             if requesting_account is None:
+
                 response = self._account_not_found_response()
 
                 return {
@@ -242,7 +207,7 @@ class QueryService:
                 }
 
         # ========================================================
-        # 3. EXPLICIT CROSS-ACCOUNT QUESTION CHECK
+        # 3. CROSS-ACCOUNT QUESTION CHECK
         # ========================================================
 
         if account_id:
@@ -291,7 +256,7 @@ class QueryService:
                     "retrieved_chunks": 0,
                 }
 
-            # CRITICAL TENANT ISOLATION CHECK
+            # Tenant isolation
             if account_id and order["account_id"] != account_id:
 
                 response = self._access_denied_response()
@@ -333,7 +298,7 @@ class QueryService:
                     "retrieved_chunks": 0,
                 }
 
-            # CRITICAL TENANT ISOLATION CHECK
+            # Tenant isolation
             if account_id and ticket["account_id"] != account_id:
 
                 response = self._access_denied_response()
@@ -385,7 +350,40 @@ class QueryService:
         )
 
         # ========================================================
-        # 8. GROUNDED ANSWER GENERATION
+        # 8. EVIDENCE + PRECEDENCE
+        # ========================================================
+
+        evidence = build_evidence(results)
+
+        # Never allow another customer's contract
+        # to enter the generation context.
+        evidence = filter_account_evidence(
+            evidence,
+            account_id,
+        )
+
+        # Deterministic authority ordering.
+        evidence = get_best_evidence(
+            evidence,
+            limit=self.retriever.top_k,
+        )
+
+        # Convert Evidence objects back into dictionaries
+        # for the generator.
+        results = [
+            {
+                "document": item.document,
+                "page": item.page,
+                "content": item.content,
+                "authority": item.authority,
+                "account_id": item.account_id,
+                "score": item.score,
+            }
+            for item in evidence
+        ]
+
+        # ========================================================
+        # 9. GROUNDED ANSWER GENERATION
         # ========================================================
 
         response = self.generator.generate(
@@ -396,7 +394,7 @@ class QueryService:
         )
 
         # ========================================================
-        # 9. FINAL RESPONSE
+        # 10. FINAL RESPONSE
         # ========================================================
 
         return {

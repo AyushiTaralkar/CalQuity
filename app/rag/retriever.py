@@ -21,9 +21,8 @@ class Retriever:
         """
         Retrieve relevant document chunks.
 
-        If account_id is provided:
-        - Account-specific contract evidence is preferred.
-        - Global/current policy evidence is still allowed.
+        Account-specific evidence is preferred,
+        while global policies remain available.
         """
 
         results = search(
@@ -41,18 +40,24 @@ class Retriever:
         global_results = []
 
         for result in results:
-            metadata = result.get("metadata", {})
 
-            result_account = metadata.get("account_id")
+            # Support both metadata formats
+            metadata = result.get("metadata") or {}
+
+            result_account = (
+                metadata.get("account_id")
+                or result.get("account_id")
+            )
 
             if result_account == account_id:
+
                 account_results.append(result)
 
             elif result_account is None:
+
                 global_results.append(result)
 
-        # Account-specific evidence first,
-        # then global policy evidence.
+        # Account-specific evidence first.
         ordered = account_results + global_results
 
         return ordered[:self.top_k]
