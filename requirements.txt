@@ -6,3 +6,4 @@ pypdf
 sentence-transformers 
 faiss-cpu
 google-genai
+uvicorn[standard]
