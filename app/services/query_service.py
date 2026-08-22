@@ -1,5 +1,5 @@
 from typing import Optional
-
+from app.agent.router import detect_intent, Intent
 from app.database.repository import (
     lookup_account,
     lookup_order,
@@ -180,6 +180,11 @@ class QueryService:
             raise ValueError("Question cannot be empty.")
 
         question = question.strip()
+          # ========================================================
+# 1.5. INTENT ROUTING
+# ========================================================
+
+        intent = detect_intent(question)
 
         # ========================================================
         # 2. ACCOUNT VALIDATION
@@ -341,14 +346,17 @@ class QueryService:
             database_context["ticket"] = ticket
 
         # ========================================================
-        # 7. ACCOUNT-AWARE RAG RETRIEVAL
-        # ========================================================
+# 7. ACCOUNT-AWARE RAG RETRIEVAL
+# ========================================================
 
-        results = self.retriever.retrieve(
-            query=question,
-            account_id=account_id,
-        )
+        results = []
 
+        if intent in (Intent.RAG, Intent.COMBINED):
+
+           results = self.retriever.retrieve(
+               query=question,
+               account_id=account_id,
+            )
         # ========================================================
         # 8. EVIDENCE + PRECEDENCE
         # ========================================================
