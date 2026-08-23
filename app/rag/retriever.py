@@ -1,79 +1,40 @@
-from typing import Optional
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.rag.vector_store import load_vector_store, search
+from app.api.routes import router
 
 
-class Retriever:
-    """
-    Reusable semantic retriever for CalQuity documents.
+app = FastAPI(
+    title="ParcelPilot AI",
+    description="AI-powered customer support agent for ParcelPilot",
+    version="1.0.0",
+)
 
-    Normalizes raw vector-store results into the format
-    expected by the evidence and query layers.
-    """
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    def __init__(self, top_k: int = 5):
-        self.top_k = top_k
+app.include_router(router)
 
-        self.model, self.index, self.metadata = load_vector_store()
 
-    def retrieve(
-        self,
-        query: str,
-        account_id: Optional[str] = None,
-    ):
-        """
-        Retrieve relevant document chunks.
+@app.get("/")
+def root():
+    return {
+        "message": "ParcelPilot AI is running",
+        "status": "ok",
+    }
 
-        Account-specific evidence is preferred,
-        while global policies remain available.
-        """
 
-        raw_results = search(
-            self.model,
-            self.index,
-            self.metadata,
-            query,
-            top_k=self.top_k,
-        )
-
-        normalized_results = []
-
-        for result in raw_results:
-
-            metadata = result.get("metadata") or {}
-
-            normalized_results.append(
-                {
-                    "document": metadata.get("source"),
-                    "page": metadata.get("page"),
-                    "content": result.get("text", ""),
-                    "authority": metadata.get("authority"),
-                    "account_id": metadata.get("account_id"),
-                    "score": result.get("score"),
-                    "chunk_id": result.get("chunk_id"),
-                }
-            )
-
-        # If no account is supplied, return global results.
-        if not account_id:
-            return normalized_results
-
-        account_results = []
-        global_results = []
-
-        for result in normalized_results:
-
-            result_account = result.get("account_id")
-
-            if result_account == account_id:
-
-                account_results.append(result)
-
-            elif result_account is None:
-
-                global_results.append(result)
-
-        # Account-specific evidence first.
-        ordered = account_results + global_results
-
-        return ordered[:self.top_k]
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy",
+        "service": "ParcelPilot",
+    }
