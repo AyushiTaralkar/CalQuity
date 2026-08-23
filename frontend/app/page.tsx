@@ -93,7 +93,7 @@ export default function Home() {
       console.log("Calling ParcelPilot API...");
 
       const response = await fetch(
-        "http://127.0.0.1:8000/api/v1/query",
+        "https://calquity-su28.onrender.com/api/v1/query",
         {
           method: "POST",
 
