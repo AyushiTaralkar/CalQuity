@@ -205,3 +205,186 @@ A suite of verification scripts are provided under `scripts/` to validate each l
 > [!WARNING]
 > **Write Action Sanitization**
 > No state-changing endpoints (e.g. status changes, updates, or deletions) permit query injections. Values are parsed, validated, and explicitly updated using SQLAlchemy transaction parameters rather than dynamic SQL strings.
+>
+## 🏛️ Architecture Note
+
+### Agent Design
+
+CalQuity uses a lightweight orchestration architecture rather than allowing an LLM to independently decide and execute every operation.
+
+Incoming requests are first classified using deterministic intent-routing heuristics into:
+
+* **DATABASE** — structured operational queries such as order status, tracking, account information, and ticket details.
+* **RAG** — policy, SLA, cancellation, refund, contract, and operational-document questions.
+* **COMBINED** — questions that require both structured operational data and contractual/policy evidence.
+
+The orchestrator then gathers the appropriate context and passes only the relevant evidence to the generation layer. This reduces unnecessary LLM calls, improves latency, and makes system behavior more predictable.
+
+For state-changing requests, the agent does **not** directly execute mutations. It produces an `ActionProposal`, which must be explicitly confirmed by the user before the corresponding write operation is executed.
+
+### Tool Design
+
+The system separates read operations from write operations.
+
+**Read-oriented tools/services include:**
+
+* Account lookup
+* Order lookup
+* Ticket lookup
+* Semantic document retrieval
+* Contract-aware evidence retrieval
+* Policy retrieval
+
+**Write operations include:**
+
+* Ticket escalation
+* Other controlled state-changing operations exposed through dedicated API endpoints
+
+Write operations are intentionally kept outside the normal LLM execution path. The LLM can propose an action, but execution requires explicit confirmation and server-side validation.
+
+This design reduces the risk of hallucinated or unintended database mutations.
+
+### Document and Structured-Data Handling
+
+CalQuity combines two different data access strategies:
+
+**Structured operational data**
+
+Accounts, orders, and tickets are imported from the supplied Excel dataset and stored in relational tables. These records are accessed through SQLAlchemy-backed database services rather than through semantic search.
+
+**Unstructured documents**
+
+Customer contracts, support policies, SOPs, and operational guides are extracted from PDF documents, chunked, embedded using `all-MiniLM-L6-v2`, and indexed using FAISS.
+
+Retrieval metadata preserves document-level information such as source and account association, allowing the system to distinguish between:
+
+* Account-specific contractual evidence
+* Current global policies
+* Deprecated policies
+* Operational/product documentation
+
+For combined questions, structured database facts and retrieved document evidence are supplied together to the generation layer.
+
+### Source Reliability and Conflict Handling
+
+Source authority is treated explicitly rather than assuming that the most semantically similar document is always correct.
+
+The retrieval layer prioritizes:
+
+1. **Account-specific contracts** for customer-specific contractual terms
+2. **Current policies and SOPs** for global operational rules
+3. **Operational/product documentation** for product behavior and known issues
+4. **Deprecated documents** only when useful for historical context, while avoiding treating them as the current policy
+
+This prevents an older policy document from incorrectly overriding a newer policy or a customer-specific contractual agreement.
+
+When structured database state and document evidence are both available, the system uses the database as the source of truth for current operational state and documents as the source of truth for applicable rules, policies, and contractual terms.
+
+### Major Technical Trade-offs
+
+**Deterministic routing vs. fully autonomous agents**
+
+A fully autonomous agent could provide more flexible reasoning, but deterministic routing provides better predictability, lower latency, lower token consumption, and easier testing for this support workflow.
+
+**FAISS vs. managed vector database**
+
+FAISS was selected because the dataset is relatively small and retrieval can be performed locally without introducing another managed infrastructure dependency. A production deployment at significantly larger scale could migrate to a managed vector database.
+
+**SQLite vs. production relational database**
+
+SQLite keeps the assessment self-contained and simple to deploy. For a larger multi-tenant production system, I would use PostgreSQL with tenant-aware authorization and database-level isolation policies.
+
+**Lazy loading vs. startup initialization**
+
+Embedding and FAISS components are intentionally initialized only when required. This increases the latency of the first RAG request but significantly reduces startup memory usage and improves reliability on resource-constrained hosting.
+
+**Human confirmation vs. autonomous actions**
+
+The additional confirmation step introduces small interaction overhead, but it is an intentional safety trade-off for destructive or state-changing operations.
+
+## 📦 Product Note
+
+### Additional Client Problem Chosen
+
+In addition to answering support questions, I focused on the problem of **safe operational action execution**.
+
+Customer support agents often need to move beyond finding information and actually take actions, such as escalating a ticket. Allowing an LLM to directly modify operational state creates a significant risk of hallucinated, unauthorized, or unintended changes.
+
+CalQuity addresses this through a **Proposal → Confirmation → Execution** workflow.
+
+For example:
+
+> "Escalate ticket TKT-450 because of an SLA breach."
+
+The system first validates the request and returns a structured action proposal. The UI then asks the support agent for explicit confirmation. Only after confirmation does the backend execute the state-changing operation.
+
+This turns the AI assistant from a purely informational chatbot into a safer operational support assistant while retaining human control over consequential actions.
+
+### What I Would Build Next for ParcelPilot
+
+If this were developed into a larger production system, I would prioritize:
+
+* **PostgreSQL with database-level tenant isolation**
+* **Role-based access control** for support agents, managers, and administrators
+* **Audit logs** for every AI-generated response and state-changing action
+* **Observability dashboards** for latency, retrieval quality, LLM failures, and tool usage
+* **Conversation memory** scoped to individual accounts/tickets
+* **Feedback-driven evaluation** using agent ratings and resolution outcomes
+* **Automated regression evaluation** for retrieval, routing, and tenant-isolation tests
+* **Streaming responses** for better support-agent UX
+* **Queue-based background processing** for document ingestion and large-scale indexing
+* **More robust authentication and authorization** using production identity infrastructure
+* **Human escalation workflows** when confidence is low or sources conflict
+
+### What I Intentionally Left Out
+
+To keep the assessment focused and reliable, I intentionally did not build:
+
+* A fully autonomous unrestricted agent
+* Complex multi-agent orchestration
+* A production-grade identity provider
+* Enterprise-scale distributed infrastructure
+* Real carrier API integrations
+* Large-scale asynchronous job processing
+* Advanced analytics and support-team reporting
+* A managed vector database
+* Automatic execution of high-impact actions without confirmation
+
+These additions would increase system complexity without materially improving the core assessment objectives.
+
+### Primary Product Metric
+
+The primary metric I would use is:
+
+**Support Resolution Rate**
+
+> **Percentage of support requests resolved by CalQuity without requiring human escalation.**
+
+I would measure this alongside secondary metrics such as:
+
+* Average time to resolution
+* Agent acceptance/feedback rate
+* Retrieval accuracy
+* Action-confirmation success rate
+* Incorrect-answer rate
+* Cross-tenant security violations
+
+A useful AI support product should not only generate plausible answers; it should help support teams resolve customer issues **faster, correctly, and safely**.
+
+## 🤖 AI Tool Usage
+
+AI coding assistants were used as development aids throughout the implementation.
+
+The final architecture, security model, routing strategy, retrieval design, action-confirmation workflow, and implementation decisions were reviewed and adapted manually to fit the ParcelPilot requirements.
+
+AI assistance was therefore used as a **development accelerator**, rather than as an autonomous system deciding the product architecture or security boundaries.
+
+## 🌐 Hosted Application
+
+The application is deployed and available at:
+
+**https://parcelpilot-ai-ten.vercel.app/**
+
+The hosted application demonstrates the customer-support workflow, including account-aware queries, order/ticket lookups, policy and contract retrieval, combined reasoning, and confirmation-gated operational actions.
+
+Developed by: **Ayushi Taralkar**
