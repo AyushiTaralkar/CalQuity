@@ -1,4 +1,4 @@
-# CalQuity AI: Enterprise Multi-Tenant Customer Support Orchestrator
+# ParcelPilot AI: Enterprise Multi-Tenant Customer Support Orchestrator
 
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
 [![Next.js](https://img.shields.io/badge/Frontend-Next.js%2016-000000.svg?style=flat&logo=next.js)](https://nextjs.org/)
@@ -6,7 +6,7 @@
 [![FAISS](https://img.shields.io/badge/Vector%20DB-FAISS-blue.svg?style=flat)](https://github.com/facebookresearch/faiss)
 [![Security](https://img.shields.io/badge/Security-Tenant%20Isolated-red.svg?style=flat)](#multi-tenant-security--isolation)
 
-CalQuity AI is a production-grade, multi-tenant customer support AI assistant designed for the **ParcelPilot** logistics platform. It orchestrates real-time relational database queries (accounts, orders, and tickets) with a semantic search RAG (Retrieval-Augmented Generation) pipeline over customer contracts and global policies. 
+It is a production-grade, multi-tenant customer support AI assistant designed for the **ParcelPilot** logistics platform. It orchestrates real-time relational database queries (accounts, orders, and tickets) with a semantic search RAG (Retrieval-Augmented Generation) pipeline over customer contracts and global policies. 
 
 Built with safety, scalability, and efficiency in mind, CalQuity AI ensures zero cross-tenant data leakage, handles destructive state-changes with a human-in-the-loop confirmation gate, and utilizes lazy-loading mechanisms to run efficiently on memory-constrained servers.
 
