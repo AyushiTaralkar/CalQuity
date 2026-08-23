@@ -261,3 +261,63 @@ def get_all_accounts() -> list[dict]:
             }
             for account in accounts
         ]
+ # ============================================================
+# STATE-CHANGING ACTIONS
+# ============================================================
+
+def escalate_ticket(
+    ticket_id: str,
+    account_id: str,
+) -> dict | None:
+    """
+    Escalate a ticket for the specified customer account.
+
+    SECURITY:
+    A ticket can only be escalated if it belongs to the
+    requesting account.
+
+    STATE CHANGE:
+    Ticket status is changed to ESCALATED.
+
+    Returns the updated ticket.
+    """
+
+    with SessionLocal() as session:
+
+        ticket = session.scalar(
+            select(Ticket)
+            .where(
+                Ticket.ticket_id == ticket_id,
+                Ticket.account_id == account_id,
+            )
+        )
+
+        if ticket is None:
+            return None
+
+        # Prevent unnecessary duplicate state changes.
+        if ticket.status == "ESCALATED":
+            return {
+                "ticket_id": ticket.ticket_id,
+                "account_id": ticket.account_id,
+                "status": ticket.status,
+                "subject": ticket.subject,
+                "already_escalated": True,
+            }
+
+        # ========================================================
+        # STATE CHANGE
+        # ========================================================
+
+        ticket.status = "ESCALATED"
+
+        session.commit()
+        session.refresh(ticket)
+
+        return {
+            "ticket_id": ticket.ticket_id,
+            "account_id": ticket.account_id,
+            "status": ticket.status,
+            "subject": ticket.subject,
+            "already_escalated": False,
+        }
