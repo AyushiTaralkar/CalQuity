@@ -1,13 +1,14 @@
+import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.services.query_service import QueryService
 from app.database.repository import (
-    lookup_ticket,
     escalate_ticket,
+    lookup_ticket,
 )
+from app.services.query_service import QueryService
 
 
 router = APIRouter(
@@ -16,22 +17,44 @@ router = APIRouter(
 )
 
 
-query_service = QueryService(top_k=3)
-import re
+# ============================================================
+# LAZY QUERY SERVICE
+# ============================================================
 
+query_service = None
+
+
+def get_query_service() -> QueryService:
+    """
+    Create QueryService only when it is actually needed.
+
+    This prevents SentenceTransformer + FAISS from loading
+    during FastAPI startup.
+    """
+    global query_service
+
+    if query_service is None:
+        query_service = QueryService(top_k=3)
+
+    return query_service
+
+
+# ============================================================
+# ESCALATION DETECTION
+# ============================================================
 
 def detect_escalation_action(
     question: str,
     account_id: Optional[str],
 ):
     """
-    Detect explicit user requests to escalate a ticket.
+    Detect an explicit user request to escalate a ticket.
 
     This does NOT execute the escalation.
-
     It only creates a proposed action.
+
     The user must explicitly confirm before the
-    state-changing endpoint is called.
+    state-changing endpoint is executed.
     """
 
     if not question:
@@ -50,8 +73,7 @@ def detect_escalation_action(
     ):
         return None
 
-    # Find ticket ID such as:
-    # TKT-450
+    # Find ticket IDs such as TKT-450.
     match = re.search(
         r"\bTKT-\d+\b",
         question.upper(),
@@ -62,7 +84,6 @@ def detect_escalation_action(
 
     ticket_id = match.group(0)
 
-    # Extract a simple reason.
     reason = "User requested ticket escalation"
 
     if "sla" in text:
@@ -94,6 +115,7 @@ class Source(BaseModel):
     account_id: Optional[str] = None
     score: Optional[float] = None
 
+
 class ActionProposal(BaseModel):
     type: str
     ticket_id: str
@@ -123,38 +145,45 @@ class QueryResponse(BaseModel):
 # ============================================================
 # QUERY ENDPOINT
 # ============================================================
+
 @router.post(
     "/query",
     response_model=QueryResponse,
 )
 def query(request: QueryRequest):
+    """
+    Main ParcelPilot AI query endpoint.
+
+    Handles:
+    1. Explicit escalation requests
+    2. Normal AI/RAG queries
+
+    State-changing actions require a separate
+    explicit confirmation request.
+    """
 
     try:
 
-        # ========================================================
+        # ====================================================
         # 1. DETECT STATE-CHANGING REQUEST
-        # ========================================================
+        # ====================================================
 
         action = detect_escalation_action(
             question=request.question,
             account_id=request.account_id,
         )
 
-        # ========================================================
-        # 2. ACTION REQUEST
-        # ========================================================
+        # ====================================================
+        # 2. ACTION REQUEST -> PROPOSAL ONLY
+        # ====================================================
 
         if action:
 
             return {
                 "question": request.question,
-
                 "account_id": request.account_id,
-
                 "order_id": request.order_id,
-
                 "ticket_id": action["ticket_id"],
-
                 "answer": (
                     f"I found ticket {action['ticket_id']}. "
                     f"You requested an escalation because of "
@@ -163,23 +192,20 @@ def query(request: QueryRequest):
                     f"Please confirm if you want me to escalate "
                     f"the ticket."
                 ),
-
                 "confidence": 1.0,
-
                 "sources": [],
-
                 "retrieved_chunks": 0,
-
                 "tool": "Ticket Lookup",
-
                 "action": action,
             }
 
-        # ========================================================
+        # ====================================================
         # 3. NORMAL AI QUERY
-        # ========================================================
+        # ====================================================
 
-        response = query_service.query(
+        service = get_query_service()
+
+        response = service.query(
             question=request.question,
             account_id=request.account_id,
             order_id=request.order_id,
@@ -187,20 +213,6 @@ def query(request: QueryRequest):
         )
 
         return response
-
-    except ValueError as exc:
-
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        )
-
-    except Exception as exc:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Query failed: {str(exc)}",
-        )
 
     except ValueError as exc:
 
@@ -225,9 +237,7 @@ class EscalationRequest(BaseModel):
     ticket_id: str
     account_id: str
 
-    # IMPORTANT:
-    # The action cannot execute unless the user explicitly
-    # confirms it.
+    # Action cannot execute unless the user explicitly confirms.
     confirm: bool = False
 
 
@@ -257,22 +267,20 @@ def escalate_ticket_action(
     request: EscalationRequest,
 ):
     """
-    State-changing action tool.
+    State-changing escalation action.
 
     Flow:
 
         confirm=False
-            ->
+            ↓
         Proposal only
 
         confirm=True
-            ->
-        Actually escalate ticket
+            ↓
+        Execute escalation
 
     SECURITY:
-
-        The ticket must belong to account_id.
-
+        The ticket must belong to the supplied account_id.
     """
 
     # ========================================================
@@ -291,7 +299,7 @@ def escalate_ticket_action(
         )
 
     # ========================================================
-    # 2. TENANT ISOLATION
+    # 2. TENANT / ACCOUNT ISOLATION
     # ========================================================
 
     if ticket["account_id"] != request.account_id:
@@ -349,7 +357,7 @@ def escalate_ticket_action(
         )
 
     # ========================================================
-    # 5. RETURN ACTION RESULT
+    # 5. ALREADY ESCALATED
     # ========================================================
 
     if result.get("already_escalated"):
@@ -367,6 +375,10 @@ def escalate_ticket_action(
                 f"escalated."
             ),
         }
+
+    # ========================================================
+    # 6. SUCCESSFUL ESCALATION
+    # ========================================================
 
     return {
         "success": True,
