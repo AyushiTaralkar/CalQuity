@@ -15,19 +15,23 @@ from app.rag.evidence import (
     get_best_evidence,
 )
 
-from app.rag.retriever import Retriever
-from app.rag.generator import AnswerGenerator
-
 
 class QueryService:
     """
-    Main CalQuity orchestration layer.
+    Main ParcelPilot orchestration layer.
 
     Combines:
         1. Operational database data
         2. Account authorization / tenant isolation
         3. Policy / contract RAG evidence
         4. Grounded Gemini generation
+
+    IMPORTANT:
+        Heavy ML/RAG components are loaded lazily.
+
+    This prevents SentenceTransformer / PyTorch / FAISS from
+    being loaded during FastAPI startup, which is important for
+    memory-constrained deployments such as Render's free tier.
 
     Security:
         A customer can ONLY access:
@@ -36,18 +40,75 @@ class QueryService:
         - Their own tickets
         - Their own account-specific contract
 
-        Global ParcelPilot policies are accessible to all accounts.
+        Global ParcelPilot policies remain accessible.
     """
 
     def __init__(self, top_k: int = 3):
-        self.retriever = Retriever(top_k=top_k)
-        self.generator = AnswerGenerator()
+
+        # Store configuration only.
+        # DO NOT initialize Retriever or AnswerGenerator here.
+        self.top_k = top_k
+
+        self.retriever = None
+        self.generator = None
+
+    # ============================================================
+    # LAZY AI COMPONENT LOADING
+    # ============================================================
+
+    def _load_ai_components(self):
+        """
+        Lazily load the heavy RAG and generation components.
+
+        This function is called only when a normal AI query
+        actually requires them.
+
+        This avoids loading:
+            - PyTorch
+            - Transformers
+            - SentenceTransformer
+            - FAISS
+            - Gemini generator
+
+        during FastAPI startup.
+        """
+
+        # --------------------------------------------------------
+        # Load Retriever only when needed
+        # --------------------------------------------------------
+
+        if self.retriever is None:
+
+            from app.rag.retriever import Retriever
+
+            print("[INFO] Loading RAG retriever...")
+
+            self.retriever = Retriever(
+                top_k=self.top_k
+            )
+
+            print("[INFO] RAG retriever loaded.")
+
+        # --------------------------------------------------------
+        # Load Answer Generator only when needed
+        # --------------------------------------------------------
+
+        if self.generator is None:
+
+            from app.rag.generator import AnswerGenerator
+
+            print("[INFO] Loading answer generator...")
+
+            self.generator = AnswerGenerator()
+
+            print("[INFO] Answer generator loaded.")
 
     # ============================================================
     # SECURITY HELPERS
     # ============================================================
 
     def _access_denied_response(self):
+
         return {
             "answer": (
                 "ANSWER:\n"
@@ -60,7 +121,10 @@ class QueryService:
             "sources": [],
         }
 
+    # ------------------------------------------------------------
+
     def _account_not_found_response(self):
+
         return {
             "answer": (
                 "ANSWER:\n"
@@ -73,7 +137,10 @@ class QueryService:
             "sources": [],
         }
 
+    # ------------------------------------------------------------
+
     def _order_not_found_response(self):
+
         return {
             "answer": (
                 "ANSWER:\n"
@@ -85,7 +152,10 @@ class QueryService:
             "sources": [],
         }
 
+    # ------------------------------------------------------------
+
     def _ticket_not_found_response(self):
+
         return {
             "answer": (
                 "ANSWER:\n"
@@ -98,7 +168,7 @@ class QueryService:
         }
 
     # ============================================================
-    # GEMINI FALLBACK
+    # GEMINI / AI FALLBACK
     # ============================================================
 
     def _evidence_fallback_response(
@@ -111,18 +181,21 @@ class QueryService:
         Safe fallback when Gemini is unavailable.
 
         Never invents an answer.
-        Returns only information that exists in retrieved evidence.
+
+        Returns only information that exists in the retrieved
+        authorized evidence.
         """
 
         if not results and not database_context:
+
             return {
                 "answer": (
                     "ANSWER:\n"
                     "The available evidence is insufficient.\n\n"
                     "REASONING:\n"
-                    "No relevant authorized evidence was retrieved for "
-                    "this question. Therefore, I cannot determine the "
-                    "answer without risking an unsupported claim."
+                    "No relevant authorized evidence was retrieved "
+                    "for this question. Therefore, I cannot determine "
+                    "the answer without risking an unsupported claim."
                 ),
                 "confidence": 0.0,
                 "sources": [],
@@ -130,13 +203,17 @@ class QueryService:
 
         answer_parts = [
             "ANSWER:",
-            "The AI generation service is temporarily unavailable, "
-            "so I cannot provide a synthesized answer.",
+            (
+                "The AI generation service is temporarily unavailable, "
+                "so I cannot provide a synthesized answer."
+            ),
             "",
             "REASONING:",
-            "The following authorized evidence was retrieved and can "
-            "be reviewed, but it should not be interpreted beyond "
-            "what is explicitly stated in the evidence.",
+            (
+                "The following authorized evidence was retrieved and "
+                "can be reviewed, but it should not be interpreted "
+                "beyond what is explicitly stated in the evidence."
+            ),
         ]
 
         sources = []
@@ -150,11 +227,16 @@ class QueryService:
             score = result.get("score")
 
             if content:
+
                 content = content.strip()
 
-                # Prevent extremely large fallback responses
+                # Prevent extremely large fallback responses.
                 if len(content) > 700:
-                    content = content[:700].rstrip() + "..."
+
+                    content = (
+                        content[:700].rstrip()
+                        + "..."
+                    )
 
                 answer_parts.extend(
                     [
@@ -177,13 +259,16 @@ class QueryService:
             [
                 "",
                 "NOTE:",
-                "This response is based only on retrieved authorized "
-                "evidence because the AI generation service is currently "
-                "unavailable.",
+                (
+                    "This response is based only on retrieved "
+                    "authorized evidence because the AI generation "
+                    "service is currently unavailable."
+                ),
             ]
         )
 
-        # Conservative confidence because this is not LLM-generated
+        # Conservative confidence because this is not
+        # LLM-generated.
         confidence = 0.5 if results else 0.2
 
         return {
@@ -203,9 +288,12 @@ class QueryService:
     ) -> bool:
         """
         Detect explicit references to another customer account.
+
+        This is an additional protection layer before RAG retrieval.
         """
 
         if not current_account_id:
+
             return False
 
         question_lower = question.lower()
@@ -217,22 +305,35 @@ class QueryService:
             target_account_id = account["account_id"]
             target_account_name = account["account_name"]
 
-            # Skip current account
+            # Skip the current account.
             if target_account_id == current_account_id:
+
                 continue
 
+            # ----------------------------------------------------
             # Account ID
+            # ----------------------------------------------------
+
             if target_account_id.lower() in question_lower:
+
                 return True
 
+            # ----------------------------------------------------
             # Full account name
+            # ----------------------------------------------------
+
             if (
                 target_account_name
-                and target_account_name.lower() in question_lower
+                and target_account_name.lower()
+                in question_lower
             ):
+
                 return True
 
+            # ----------------------------------------------------
             # Short company name
+            # ----------------------------------------------------
+
             words = target_account_name.lower().split()
 
             if words:
@@ -240,7 +341,9 @@ class QueryService:
                 short_name = words[0]
 
                 if len(short_name) >= 4:
+
                     if short_name in question_lower:
+
                         return True
 
         return False
@@ -257,7 +360,7 @@ class QueryService:
         ticket_id: Optional[str] = None,
     ):
         """
-        Execute a secure CalQuity query.
+        Execute a secure ParcelPilot query.
 
         Pipeline:
 
@@ -267,11 +370,13 @@ class QueryService:
         4. Validate order ownership
         5. Validate ticket ownership
         6. Build database context
-        7. Retrieve RAG evidence
-        8. Apply account filtering
-        9. Apply evidence precedence
-        10. Generate grounded answer
-        11. Fall back safely if Gemini fails
+        7. Lazily load RAG/AI components
+        8. Retrieve RAG evidence
+        9. Apply account filtering
+        10. Apply evidence precedence
+        11. Generate grounded answer
+        12. Fall back safely if Gemini fails
+        13. Return final response
         """
 
         # ========================================================
@@ -279,7 +384,10 @@ class QueryService:
         # ========================================================
 
         if not question or not question.strip():
-            raise ValueError("Question cannot be empty.")
+
+            raise ValueError(
+                "Question cannot be empty."
+            )
 
         question = question.strip()
 
@@ -291,11 +399,15 @@ class QueryService:
 
         if account_id:
 
-            requesting_account = lookup_account(account_id)
+            requesting_account = lookup_account(
+                account_id
+            )
 
             if requesting_account is None:
 
-                response = self._account_not_found_response()
+                response = (
+                    self._account_not_found_response()
+                )
 
                 return {
                     "question": question,
@@ -319,7 +431,9 @@ class QueryService:
                 account_id,
             ):
 
-                response = self._access_denied_response()
+                response = (
+                    self._access_denied_response()
+                )
 
                 return {
                     "question": question,
@@ -340,12 +454,16 @@ class QueryService:
 
         if order_id:
 
-            order = lookup_order(order_id)
+            order = lookup_order(
+                order_id
+            )
 
-            # Order does not exist
+            # Order does not exist.
             if order is None:
 
-                response = self._order_not_found_response()
+                response = (
+                    self._order_not_found_response()
+                )
 
                 return {
                     "question": question,
@@ -358,10 +476,15 @@ class QueryService:
                     "retrieved_chunks": 0,
                 }
 
-            # Tenant isolation
-            if account_id and order["account_id"] != account_id:
+            # Tenant isolation.
+            if (
+                account_id
+                and order["account_id"] != account_id
+            ):
 
-                response = self._access_denied_response()
+                response = (
+                    self._access_denied_response()
+                )
 
                 return {
                     "question": question,
@@ -382,12 +505,16 @@ class QueryService:
 
         if ticket_id:
 
-            ticket = lookup_ticket(ticket_id)
+            ticket = lookup_ticket(
+                ticket_id
+            )
 
-            # Ticket does not exist
+            # Ticket does not exist.
             if ticket is None:
 
-                response = self._ticket_not_found_response()
+                response = (
+                    self._ticket_not_found_response()
+                )
 
                 return {
                     "question": question,
@@ -400,10 +527,15 @@ class QueryService:
                     "retrieved_chunks": 0,
                 }
 
-            # Tenant isolation
-            if account_id and ticket["account_id"] != account_id:
+            # Tenant isolation.
+            if (
+                account_id
+                and ticket["account_id"] != account_id
+            ):
 
-                response = self._access_denied_response()
+                response = (
+                    self._access_denied_response()
+                )
 
                 return {
                     "question": question,
@@ -424,30 +556,42 @@ class QueryService:
 
         if requesting_account:
 
-            database_context["account"] = requesting_account
-
-            database_context["orders"] = get_account_orders(
-                account_id
+            database_context["account"] = (
+                requesting_account
             )
 
-            database_context["tickets"] = get_account_tickets(
-                account_id
+            database_context["orders"] = (
+                get_account_orders(account_id)
+            )
+
+            database_context["tickets"] = (
+                get_account_tickets(account_id)
             )
 
         if order:
+
             database_context["order"] = order
 
         if ticket:
+
             database_context["ticket"] = ticket
 
         # ========================================================
-        # 7. ACCOUNT-AWARE RAG RETRIEVAL
+        # 7. LOAD AI COMPONENTS
         # ========================================================
 
-        # Retrieve evidence for every question.
-        # Intent routing is intentionally bypassed here because
-        # policy/product questions must not be skipped due to
-        # incorrect intent classification.
+        # IMPORTANT:
+        #
+        # This is the first point at which the heavy ML stack
+        # is loaded.
+        #
+        # FastAPI startup remains lightweight.
+        #
+        self._load_ai_components()
+
+        # ========================================================
+        # 8. ACCOUNT-AWARE RAG RETRIEVAL
+        # ========================================================
 
         results = self.retriever.retrieve(
             query=question,
@@ -455,29 +599,34 @@ class QueryService:
         )
 
         # ========================================================
-        # 8. EVIDENCE + PRECEDENCE
+        # 9. EVIDENCE + PRECEDENCE
         # ========================================================
 
-        evidence = build_evidence(results)
+        evidence = build_evidence(
+            results
+        )
 
         # Never allow another customer's contract
         # to enter the generation context.
+
         evidence = filter_account_evidence(
             evidence,
             account_id,
         )
 
         # Deterministic authority ordering.
+
         evidence = get_best_evidence(
             evidence,
             limit=self.retriever.top_k,
         )
 
         # ========================================================
-        # 9. CONVERT EVIDENCE FOR GENERATOR
+        # 10. CONVERT EVIDENCE FOR GENERATOR
         # ========================================================
 
         results = [
+
             {
                 "document": item.document,
                 "page": item.page,
@@ -486,11 +635,12 @@ class QueryService:
                 "account_id": item.account_id,
                 "score": item.score,
             }
+
             for item in evidence
         ]
 
         # ========================================================
-        # 10. GROUNDED ANSWER GENERATION
+        # 11. GROUNDED ANSWER GENERATION
         # ========================================================
 
         try:
@@ -508,17 +658,20 @@ class QueryService:
 
             print(
                 "[WARN] Gemini generation failed. "
-                f"Using evidence fallback. Error: {error_message}"
+                "Using evidence fallback. "
+                f"Error: {error_message}"
             )
 
-            response = self._evidence_fallback_response(
-                question=question,
-                results=results,
-                database_context=database_context,
+            response = (
+                self._evidence_fallback_response(
+                    question=question,
+                    results=results,
+                    database_context=database_context,
+                )
             )
 
         # ========================================================
-        # 11. FINAL RESPONSE
+        # 12. FINAL RESPONSE
         # ========================================================
 
         return {
